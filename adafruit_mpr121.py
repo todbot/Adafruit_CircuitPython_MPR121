@@ -66,6 +66,8 @@ MPR121_NCLT = const(0x34)
 MPR121_FDLT = const(0x35)
 MPR121_TOUCHTH_0 = const(0x41)
 MPR121_RELEASETH_0 = const(0x42)
+MPR121_PROX_TTH = const(0x59)
+MPR121_PROX_RTH = const(0x5A)
 MPR121_DEBOUNCE = const(0x5B)
 MPR121_CONFIG1 = const(0x5C)
 MPR121_CONFIG2 = const(0x5D)
@@ -84,6 +86,14 @@ MPR121_ECR = const(0x5E)
 # MPR121_GPIOTOGGLE      = const(0x7A)
 MPR121_SOFTRESET = const(0x80)
 
+# values for MPR121 ECR register
+MPR121_ECR_STOP_MODE = const(0b00000000)  # CL 10, ELEPPROX 00, ELE 1111
+MPR121_ECR_ON_NOPROX = const(0b10001111)  # CL 10, ELEPPROX 00, ELE 1111
+MPR121_ECR_ON_WPROX  = const(0b10111111)  # CL 10, ELEPPROX 11, ELE 1111
+
+ENABLE_PROX = True
+
+MPR121_ECR_ON = MPR121_ECR_ON_WPROX if ENABLE_PROX else ECR_ON_NOPROX
 
 class MPR121_Channel:
     # pylint: disable=protected-access
@@ -160,12 +170,13 @@ class MPR121:
         """
         self._i2c = i2c_device.I2CDevice(i2c, address)
         self._buffer = bytearray(2)
-        self._channels = [None] * 12
+        self._channels = [None] * 13
         self.reset()
 
     def __getitem__(self, key: int) -> MPR121_Channel:
-        if key < 0 or key > 11:
-            raise IndexError("pin must be a value 0-11")
+        #if key < 0 or key > 11:
+        if key < 0 or key > 12:
+            raise IndexError("pin must be a value 0-11, 12 for prox")
         if self._channels[key] is None:
             self._channels[key] = MPR121_Channel(self, key)
         return self._channels[key]
@@ -184,10 +195,10 @@ class MPR121:
             stop_required = False
         with self._i2c:
             if stop_required:
-                self._i2c.write(bytes([MPR121_ECR, 0x00]))
+                self._i2c.write(bytes([MPR121_ECR, MPR121_ECR_STOP_MODE]))
             self._i2c.write(bytes([register, value]))
             if stop_required:
-                self._i2c.write(bytes([MPR121_ECR, 0x8F]))
+                self._i2c.write(bytes([MPR121_ECR, MPR121_ECR_ON]))
 
     def _read_register_bytes(
         self, register: int, result: bytearray, length: Optional[int] = None
@@ -214,7 +225,8 @@ class MPR121:
         )  # This 1ms delay here probably isn't necessary but can't hurt.
 
         # Set electrode configuration to default values.
-        self._write_register_byte(MPR121_ECR, 0x00)
+        #self._write_register_byte(MPR121_ECR, 0x00)
+        self._write_register_byte(MPR121_ECR, MPR121_ECR_STOP_MODE)
 
         # Check CDT, SFI, ESI configuration is at default values.
         self._read_register_bytes(MPR121_CONFIG2, self._buffer, 1)
@@ -239,14 +251,36 @@ class MPR121:
         self._write_register_byte(MPR121_NCLT, 0x00)
         self._write_register_byte(MPR121_FDLT, 0x00)
 
+        #self._write_register_byte(MPR121_PROX_TTH, 0x01)
+        #self._write_register_byte(MPR121_PROX_RTH, 0x02)
+        #self._write_register_byte(MPR121_PROX_TTH, 0x05)
+        #self._write_register_byte(MPR121_PROX_RTH, 0x08)
+        # self._write_register_byte(0x36, 0xFF)
+        # self._write_register_byte(0x37, 0xFF)
+        # self._write_register_byte(0x38, 0x00)
+        # self._write_register_byte(0x39, 0x00)
+        # self._write_register_byte(0x3A, 0x01)
+        # self._write_register_byte(0x3B, 0x01)
+        # self._write_register_byte(0x3C, 0xFF)
+        # self._write_register_byte(0x3D, 0xFF)
+        # self._write_register_byte(0x3E, 0x00)
+        # self._write_register_byte(0x3F, 0x00)
+        # self._write_register_byte(0x40, 0x00)
+
         # Set other configuration registers.
         self._write_register_byte(MPR121_DEBOUNCE, 0)
-        self._write_register_byte(MPR121_CONFIG1, 0x10)  # default, 16uA charge current
-        self._write_register_byte(MPR121_CONFIG2, 0x20)  # 0.5uS encoding, 1ms period
+        #self._write_register_byte(MPR121_CONFIG1, 0x10)  # default, 16uA charge current
+        self._write_register_byte(MPR121_CONFIG1, 0x2f) # 6 smpls, 63uA charge current
+        #self._write_register_byte(MPR121_CONFIG2, 0x20)  # 0.5uS encoding, 1ms period
+        #self._write_register_byte(MPR121_CONFIG2, 0x20)
+        #self._write_register_byte(MPR121_CONFIG2, 0x24)
+        #self._write_register_byte(MPR121_CONFIG2, 0b01000100)
+        self._write_register_byte(MPR121_CONFIG2, 0b01100100) # 16 uS encoding, 4 smpl, 16ms
+
 
         # Enable all electrodes.
         self._write_register_byte(
-            MPR121_ECR, 0x8F
+            MPR121_ECR, MPR121_ECR_ON
         )  # start with first 5 bits of baseline tracking
 
     def filtered_data(self, pin: int) -> int:
@@ -260,8 +294,8 @@ class MPR121:
         :return: The filtered data value stored in the register.
         :rtype: int
         """
-        if pin < 0 or pin > 11:
-            raise ValueError("Pin must be a value 0-11.")
+        if pin < 0 or pin > 12:
+            raise ValueError("Pin must be a value 0-11. 12 for prox")
         self._read_register_bytes(MPR121_FILTDATA_0L + pin * 2, self._buffer)
         return ((self._buffer[1] << 8) | (self._buffer[0])) & 0xFFFF
 
@@ -276,10 +310,13 @@ class MPR121:
         :return: The baseline data value stored in the register.
         :rtype: int
         """
-        if pin < 0 or pin > 11:
-            raise ValueError("Pin must be a value 0-11.")
+        if pin < 0 or pin > 12:
+            raise ValueError("Pin must be a value 0-11. 12 for prox")
         self._read_register_bytes(MPR121_BASELINE_0 + pin, self._buffer, 1)
         return self._buffer[0] << 2
+
+    #def proximity(self) -> int:
+    #    self._read_register_bytes( MPR121_
 
     def touched(self) -> int:
         """Get the touch state of all pins as a 12-bit value.
@@ -300,7 +337,7 @@ class MPR121:
         :return: True if ``pin`` is being touched; otherwise False.
         :rtype: bool
         """
-        if pin < 0 or pin > 11:
-            raise ValueError("Pin must be a value 0-11.")
+        if pin < 0 or pin > 12:
+            raise ValueError("Pin must be a value 0-11. 12 for prox")
         touches = self.touched()
         return (touches & (1 << pin)) > 0
